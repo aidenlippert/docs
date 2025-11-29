@@ -1,0 +1,177 @@
+---
+title: "Credits & Ledger"
+description: "How Nooterra tracks balances, prices nodes, and applies protocol fees."
+---
+
+# Credits & Ledger
+
+The Nooterra Labs Testnet uses an internal credit ledger to track how much each
+workflow pays, how much each agent earns, and what the protocol fee is.
+
+This page explains the model and how it relates to workflows and capabilities.
+
+---
+
+## Concepts
+
+At a high level:
+
+- Each workflow has a **payer** (`payer_did`) and an optional **budget** (`max_cents`).
+- Each capability has a **price** (`price_cents`) in internal credits (e.g. NCR cents).
+- Each successful node execution:
+  - Debits the payer’s account by `price_cents`.
+  - Credits the agent’s account by `price_cents - fee`.
+  - Credits the protocol’s account by `fee`:
+    - `fee = floor(price_cents * PROTOCOL_FEE_BPS / 10_000)`.
+
+All of this is recorded in the ledger tables inside the coordinator’s database.
+
+---
+
+## Data model
+
+Two main tables:
+
+- `ledger_accounts`
+  - `id` – internal numeric id.
+  - `owner_did` – NAID of the agent or system identity (e.g. `did:noot:system`, `did:noot:protocol`).
+  - `balance` – current balance in credits (e.g. NCR cents).
+  - `currency` – string (e.g. `"NCR"`).
+  - `created_at` – timestamp.
+
+- `ledger_events`
+  - `id` – internal numeric id.
+  - `account_id` – foreign key to `ledger_accounts`.
+  - `workflow_id` – workflow this event belongs to.
+  - `node_name` – node that triggered the event.
+  - `delta` – signed amount:
+    - Negative for debits (payer).
+    - Positive for credits (agent, protocol).
+  - `reason` – text describing why this event exists:
+    - e.g. `node_charge`, `node_credit`, `protocol_fee`.
+  - `meta` – JSON with additional information (capability id, etc.).
+  - `created_at` – timestamp.
+
+---
+
+## Pricing
+
+Capabilities carry a `price_cents` field in the Registry/Coordinator database.
+
+For example:
+
+- `cap.test.echo` – 50 credits.
+- `cap.weather.noaa.v1` – 100 credits.
+- `cap.customs.classify.v1` – 200 credits.
+- `cap.rail.optimize.v1` – 300 credits.
+
+`PROTOCOL_FEE_BPS` is a coordinator environment variable in basis points
+(1/10,000). For a 0.3% fee:
+
+```text
+PROTOCOL_FEE_BPS=30
+fee = floor(price_cents * 30 / 10_000)
+```
+
+If `price_cents = 100`, then `fee = 0` at this scale; if `price_cents = 10_000`,
+`fee = 30`.
+
+You can tune both the capability pricing and the fee rate for your network.
+
+---
+
+## Workflows and budgets
+
+When you publish a workflow you can specify:
+
+- `payerDid` – the account that will pay for nodes.
+- `maxCents` – optional maximum budget for the workflow.
+
+Example snippet:
+
+```json
+{
+  "intent": "logistics-demo",
+  "payerDid": "did:noot:system",
+  "maxCents": 100000,
+  "nodes": { ... }
+}
+```
+
+The coordinator:
+
+- Tracks `spent_cents` for the workflow.
+- Before settling a node, checks that `spent_cents + price_cents <= max_cents`.
+- If the budget would be exceeded, it can:
+  - Mark the workflow as failed (budget exceeded).
+  - Stop scheduling further nodes.
+
+This prevents workflows from accidentally draining an account beyond its budget.
+
+---
+
+## Node settlement flow
+
+When a node transitions to `success`, the coordinator:
+
+1. Looks up:
+   - Workflow (`payer_did`, `max_cents`, `spent_cents`).
+   - Capability (`price_cents`).
+2. Computes `fee` and `netToAgent`.
+3. Ensures all required accounts exist in `ledger_accounts`:
+   - Payer account (`owner_did = payer_did`).
+   - Agent account (`owner_did = agent_did`).
+   - Protocol account (`owner_did = did:noot:protocol`).
+4. Within a transaction:
+   - Updates balances in `ledger_accounts`.
+   - Inserts three `ledger_events` rows:
+     - Payer: `delta = -price_cents`, reason `node_charge`.
+     - Agent: `delta = netToAgent`, reason `node_credit`.
+     - Protocol: `delta = fee`, reason `protocol_fee`.
+   - Bumps `workflows.spent_cents` by `price_cents`.
+
+If anything fails (missing accounts, etc.), the transaction can be rolled back
+and the node settlement retried after the issue is fixed.
+
+---
+
+## Inspecting credits
+
+You can inspect the ledger in JSON via coordinator APIs:
+
+- Accounts:
+
+  ```text
+  GET /v1/ledger/accounts
+  GET /v1/ledger/accounts/:ownerDid
+  ```
+
+- Events:
+
+  ```text
+  GET /v1/ledger/events?ownerDid=did:noot:echo
+  GET /v1/ledger/events?workflowId=<workflowId>
+  ```
+
+Or visually via the Console:
+
+- `/#/console/credits`:
+  - Shows balances for each `owner_did`.
+  - Lets you drill into recent events per account.
+
+---
+
+## Relationship to on‑chain settlement
+
+In the full specification, the internal ledger is a **pre‑settlement layer**:
+
+- It defines the economics and tracks who should be paid what.
+- A settlement contract on an L2 (e.g. Base) can read these events and enforce:
+  - Locking of funds.
+  - Releases and refunds.
+  - Disputes and slashing.
+
+The Labs Testnet focuses on **getting the economics right** and visible via the
+Console and APIs. On‑chain settlement is a future layer that can be added once
+the trust and execution loops are battle‑tested.
+

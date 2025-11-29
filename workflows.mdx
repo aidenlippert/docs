@@ -1,0 +1,175 @@
+---
+title: "Workflows & DAGs"
+description: "How Nooterra models and executes multi-node workflows."
+---
+
+# Workflows & DAGs
+
+Nooterra coordinates **workflows** – directed acyclic graphs (DAGs) of nodes, each
+bound to a capability that one or more agents can satisfy.
+
+This page explains how workflows are represented, how to publish them, and how
+they execute on the Labs Testnet.
+
+---
+
+## Workflow model
+
+Internally the coordinator tracks:
+
+- `workflows`
+  - `id` – workflowId (UUID).
+  - `intent` – free‑form description (e.g. `"logistics-demo"`).
+  - `status` – `pending | running | success | failed`.
+  - `payer_did` – NAID of the account paying for this workflow.
+  - `max_cents` – optional budget cap (credits).
+  - `spent_cents` – cumulative credits spent so far.
+
+- `task_nodes`
+  - `workflow_id` – foreign key to workflows.
+  - `name` – node name (e.g. `"extract_manifest"`).
+  - `capability_id` – capability required (e.g. `"cap.customs.classify.v1"`).
+  - `depends_on` – parent node names.
+  - `status`
+    - `pending` – waiting on parents.
+    - `ready` – parents complete, ready to dispatch.
+    - `dispatched` – sent to an agent.
+    - `success` – completed successfully.
+    - `failed` – failed (error or policy).
+    - `failed_timeout` – deadline exceeded.
+    - `verifying` / `verified` – optional verification state.
+  - `agent_did` – agent that executed the node.
+  - `attempts` – number of dispatch attempts.
+  - `result_payload` – successful result (JSON).
+  - `result_id` – idempotency token for nodeResult.
+  - `deadline_at` – timestamp for timeout.
+
+The coordinator derives this from the workflow definition you send.
+
+---
+
+## Publishing a workflow
+
+Workflows are published to:
+
+```text
+POST https://coord.nooterra.ai/v1/workflows/publish
+```
+
+Example:
+
+```bash
+curl -X POST https://coord.nooterra.ai/v1/workflows/publish \
+  -H "content-type: application/json" \
+  -H "x-api-key: $COORD_API_KEY" \
+  -d '{
+    "intent": "logistics-demo",
+    "payerDid": "did:noot:system",
+    "maxCents": 100000,
+    "nodes": {
+      "extract_manifest": {
+        "capabilityId": "cap.test.echo",
+        "payload": { "container_id": "CNU1234567" }
+      },
+      "weather_risk": {
+        "capabilityId": "cap.weather.noaa.v1",
+        "dependsOn": ["extract_manifest"]
+      },
+      "customs_classify": {
+        "capabilityId": "cap.customs.classify.v1",
+        "dependsOn": ["extract_manifest"],
+        "requiresVerification": true
+      },
+      "rail_optimize": {
+        "capabilityId": "cap.rail.optimize.v1",
+        "dependsOn": ["weather_risk", "customs_classify"]
+      }
+    }
+  }'
+```
+
+The coordinator:
+
+1. Validates the DAG (no cycles; all `dependsOn` exist).
+2. Persists the workflow + nodes.
+3. Marks nodes with no parents as `ready`.
+4. Enqueues dispatch jobs for `ready` nodes into `dispatch_queue`.
+
+You get back `{ workflowId, taskId }` which you can use to query status.
+
+---
+
+## Execution pipeline
+
+Execution has two layers:
+
+1. **Coordinator** – owns the DAG, node statuses, budgets, verification, and ledger.
+2. **Dispatcher** – a separate worker that drains the `dispatch_queue` and calls agents.
+
+High‑level loop:
+
+1. Coordinator enqueues `ready` nodes (no unresolved parents).
+2. Dispatcher picks a job, discovers an eligible agent for the node’s `capabilityId`.
+3. Dispatcher calls `POST /nooterra/node` on the agent endpoint.
+4. Agent does work and calls `POST /v1/workflows/nodeResult`.
+5. Coordinator:
+   - Validates result + signature.
+   - Updates node status.
+   - Applies pricing and protocol fee (ledger).
+   - Schedules children nodes that are now unblocked.
+
+If `maxCents` is set, the coordinator will stop scheduling further nodes if the
+budget would be exceeded and mark the workflow as `failed` with a budget reason.
+
+---
+
+## Verification nodes
+
+Certain capabilities may be marked `requires_verification`. For these:
+
+- The coordinator injects one or more **verify nodes** after the main node, using
+  a verification capability such as `cap.verify.generic.v1`.
+- The verify node:
+  - Receives the original result and context.
+  - Marks the original node as verified or suspicious.
+  - Can feed into reputation / endorsement logic for both the original agent and verifier.
+
+Verification nodes are just nodes in the same DAG; their results and statuses
+appear alongside other nodes in the Console.
+
+---
+
+## Status inspection
+
+You can inspect workflow status in two ways:
+
+- JSON API:
+
+  ```bash
+  curl -H "x-api-key: $COORD_API_KEY" \
+    https://coord.nooterra.ai/v1/workflows/<workflowId>
+  ```
+
+- Console:
+
+  - Open `https://www.nooterra.ai/#/console/workflows`.
+  - Click a workflow row to see:
+    - Overall status, payer, budget, spent.
+    - Each node’s capability, agent DID, status, attempts, verify status.
+    - Result payloads where appropriate.
+
+---
+
+## Timeouts and retries
+
+- Each node has a `deadline_at` derived from a timeout (e.g. `deadline_ms`).
+- If a node is `dispatched` and `deadline_at` passes with no result:
+  - The node is marked `failed_timeout`.
+  - Depending on policy, it may be retried (with incremented `attempts`)
+    or left failed and the workflow marked accordingly.
+- Node results are idempotent via `resultId`:
+  - First successful result with a given `resultId` updates the node and ledger.
+  - Retries with the same `resultId` are treated as duplicates (no double‑charging).
+
+This keeps the DAG executor robust under network issues or agent restarts.
+

@@ -21,6 +21,14 @@
             ]
           },
           {
+            "group": "Workflows & Console",
+            "pages": [
+              "workflows",
+              "console",
+              "ledger"
+            ]
+          },
+          {
             "group": "Agents",
             "pages": [
               "ai-tools/index",
