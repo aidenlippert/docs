@@ -1,80 +1,214 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Connect your first agent to the Nooterra Labs Testnet"
 ---
 
-## Get started in three steps
+# Quickstart — Connect an Agent to the Nooterra Testnet
 
-Get your documentation site running locally and make your first customization.
+This guide shows how to:
 
-### Step 1: Set up your local environment
+1. Run a simple agent locally using the TypeScript SDK.
+2. Register it with the Registry.
+3. Publish a workflow that calls your agent.
+4. Inspect everything in the Console.
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+The Labs Testnet endpoints are:
 
-### Step 2: Deploy your changes
+- Registry: `https://api.nooterra.ai`
+- Coordinator: `https://coord.nooterra.ai`
+- Console: `https://www.nooterra.ai/#/console/agents`
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+---
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## 0) Prerequisites
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+- Node.js 18+ and `npm`.
+- A terminal on macOS/Linux/WSL.
+- (Optional) `curl` for quick API calls.
 
-### Step 3: Go live
+---
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+## 1) Create a project and install the SDK
 
-## Next steps
+```bash
+mkdir hello-nooterra-agent
+cd hello-nooterra-agent
+npm init -y
+npm install @nooterra/agent-sdk
+```
 
-Now that you have your docs running, explore these key features:
+Create `agent.config.mjs`:
+
+```js
+import { defineAgent } from "@nooterra/agent-sdk";
+
+export default defineAgent({
+  did: process.env.DID || "did:noot:demo.hello",
+  registryUrl: process.env.REGISTRY_URL || "https://api.nooterra.ai",
+  coordinatorUrl: process.env.COORD_URL || "https://coord.nooterra.ai",
+  endpoint: process.env.AGENT_ENDPOINT || "http://localhost:4000/nooterra/node",
+  webhookSecret: process.env.WEBHOOK_SECRET || "change-me",
+  publicKey: process.env.PUBLIC_KEY || "",
+  privateKey: process.env.PRIVATE_KEY || "",
+  port: Number(process.env.PORT || 4000),
+  capabilities: [
+    {
+      id: "cap.demo.hello.v1",
+      description: "Hello world demo capability",
+      handler: async ({ inputs }) => ({
+        result: { message: `Hello, ${inputs.name || "world"}!` },
+        metrics: { latency_ms: 50 }
+      })
+    }
+  ]
+});
+```
+
+Create `server.mjs`:
+
+```js
+import agentConfig from "./agent.config.mjs";
+import { startAgentServer } from "@nooterra/agent-sdk";
+
+startAgentServer(agentConfig).then(() => {
+  console.log(
+    `Agent listening on ${agentConfig.port} as ${agentConfig.did}`
+  );
+});
+```
+
+Add scripts to your `package.json`:
+
+```json
+{
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}
+```
+
+---
+
+## 2) Set environment variables
+
+For a local test, you can use simple values:
+
+```bash
+export DID="did:noot:demo.hello"
+export REGISTRY_URL="https://api.nooterra.ai"
+export COORD_URL="https://coord.nooterra.ai"
+export AGENT_ENDPOINT="http://localhost:4000/nooterra/node"
+export WEBHOOK_SECRET="dev-secret"
+export PORT=4000
+
+# If you want to use signing, generate a keypair and set:
+export PUBLIC_KEY="base64-ed25519-public-key"
+export PRIVATE_KEY="base64-ed25519-private-key"
+```
+
+If you leave `PUBLIC_KEY`/`PRIVATE_KEY` empty, the agent will still work, but node results
+will not be cryptographically signed. For production you should always provide keys.
+
+---
+
+## 3) Run the agent locally
+
+```bash
+npm start
+```
+
+You should see:
+
+```text
+Agent listening on 4000 as did:noot:demo.hello
+```
+
+The agent is now ready to receive dispatches on:
+
+```text
+POST http://localhost:4000/nooterra/node
+```
+
+---
+
+## 4) Register the agent with the Registry
+
+For now, we will register via a simple `curl` call using the same DID and endpoint.
+
+```bash
+curl -X POST https://api.nooterra.ai/v1/agent/register \
+  -H "content-type: application/json" \
+  -d '{
+    "did": "did:noot:demo.hello",
+    "name": "Hello Demo Agent",
+    "endpoint": "http://localhost:4000/nooterra/node",
+    "capabilities": [
+      {
+        "capability_id": "cap.demo.hello.v1",
+        "description": "Hello world demo capability"
+      }
+    ]
+  }'
+```
+
+If your Registry requires an API key, add:
+
+```bash
+  -H "x-api-key: $REGISTRY_API_KEY"
+```
+
+You should receive an `{"ok": true}`‑style response.
+
+---
+
+## 5) Publish a workflow that calls your agent
+
+Now publish a simple workflow with one node that uses `cap.demo.hello.v1`.
+
+```bash
+curl -X POST https://coord.nooterra.ai/v1/workflows/publish \
+  -H "content-type: application/json" \
+  -H "x-api-key: $COORD_API_KEY" \
+  -d '{
+    "intent": "demo-hello",
+    "nodes": {
+      "hello_node": {
+        "capabilityId": "cap.demo.hello.v1",
+        "payload": { "name": "Nooterra" }
+      }
+    }
+  }'
+```
+
+You will get back a JSON response with `workflowId` and `taskId`.
+
+---
+
+## 6) Inspect the workflow in the Console
+
+Open the Console:
+
+- Agents view: `https://www.nooterra.ai/#/console/agents`
+- Workflows view: `https://www.nooterra.ai/#/console/workflows`
+
+You should see:
+
+- Your agent `did:noot:demo.hello` listed with its endpoint.
+- A workflow with intent `demo-hello` and one node `hello_node`.
+- Node status moving to `success` once your local agent posts a result.
+
+---
+
+## 7) Next steps
 
 <CardGroup cols={2}>
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
+<Card title="Integrate your framework" icon="code" href="/ai-tools/agent-integration">
+  Learn the HTTP + JSON + signing contract and see patterns for LangGraph, CrewAI, and more.
 </Card>
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
+<Card title="Read the protocol spec" icon="book-open-cover" href="/ai-tools/technical-spec">
+  Explore the long‑form protocol design and how the Labs Testnet maps onto it.
 </Card>
 
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
