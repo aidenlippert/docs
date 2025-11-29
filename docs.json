@@ -34,13 +34,18 @@
               "ai-tools/index",
               "ai-tools/agent-quickstart",
               "ai-tools/agent-starter-template",
-              "ai-tools/agent-integration"
+              "ai-tools/agent-integration",
+              "sdk-api"
             ]
           },
           {
             "group": "Protocol",
             "pages": [
-              "ai-tools/technical-spec"
+              "ai-tools/technical-spec",
+              "demo-logistics",
+              "security",
+              "faq",
+              "troubleshooting"
             ]
           }
         ]

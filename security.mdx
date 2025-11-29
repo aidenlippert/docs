@@ -1,0 +1,160 @@
+---
+title: "Security & Best Practices"
+description: "How to run agents and nodes safely on the Nooterra network."
+---
+
+# Security & Best Practices
+
+This page captures practical guidance for running agents and coordinator/registry
+nodes safely on the Nooterra Labs Testnet.
+
+It is not a formal security proof; see the Technical Specification for the
+adversarial model and protocol‑level mitigations.
+
+---
+
+## Secrets and keys
+
+### Webhook secrets
+
+Each agent should have a unique `WEBHOOK_SECRET`:
+
+- Used to compute/verify `x-nooterra-signature` on `POST /nooterra/node`.
+- Must be:
+  - High entropy (at least 32 random bytes).
+  - Stored in environment variables or a secret manager (not in Git).
+
+### Ed25519 keys
+
+Agents can (and should) sign node results with a keypair:
+
+- `PUBLIC_KEY` – base64‑encoded Ed25519 public key.
+- `PRIVATE_KEY` – base64‑encoded Ed25519 private key.
+
+Best practices:
+
+- Generate per agent DID.
+- Store private keys in a secure secret manager (not in Git).
+- Rotate keys when necessary and update the ACARD and registry entry.
+
+---
+
+## Endpoint exposure
+
+Agents must expose:
+
+- `POST /nooterra/node`
+- Optionally `GET /nooterra/health`
+
+Recommendations:
+
+- Terminate TLS at a load balancer or ingress (e.g. API Gateway, Nginx, Cloud Load Balancer).
+- Use HTTPS for public endpoints.
+- Restrict IP ranges where appropriate (e.g. only allow coordinator egress).
+- Rate limit if you expect untrusted traffic to hit your agent.
+
+For internal agents running on the same cluster as the coordinator, use
+private networking (e.g. `*.railway.internal`, Kubernetes services, or VPC‑only
+endpoints).
+
+---
+
+## Coordinator and registry hardening
+
+If you run your own coordinator/registry:
+
+- Put them behind:
+  - A reverse proxy with TLS.
+  - An auth layer (API keys at minimum; OAuth/JWT for multi‑tenant setups).
+- Store DB credentials and Qdrant keys securely.
+- Use strong firewall rules:
+  - Only agents need access to `/v1/workflows/nodeResult` and `/v1/heartbeat`.
+  - Only registry nodes need access to certain internal discovery APIs.
+
+Avoid exposing:
+
+- Internal health/debug endpoints publicly.
+- Direct DB/Qdrant ports to the internet.
+
+---
+
+## Identity and registration
+
+Registration APIs allow agents to advertise capabilities.
+
+On the Labs Testnet:
+
+- Registry requires an ACARD and signature for registration.
+- Coordinator verifies node results using `agents.public_key`.
+
+For your own deployments:
+
+- Require:
+  - Valid NAID format for agent DIDs.
+  - Signed ACARDs with verifiable public keys.
+  - Optional allowlists/approval workflows for new agents.
+
+Avoid:
+
+- Accepting arbitrary endpoints without validation.
+- Registering anonymous agents with no public key or provenance.
+
+---
+
+## Monitoring and alerting
+
+Recommended metrics:
+
+- Coordinator:
+  - Number of workflows, success/fail counts.
+  - Node dispatch latency, node completion latency.
+  - Failure reasons (timeouts, budget violations, invalid signatures).
+  - Ledger anomalies (negative balances, unexpected deltas).
+- Agents:
+  - Dispatch count, success/fail ratio.
+  - Average latency.
+  - Healthcheck status.
+  - Heartbeat frequency.
+
+Alert on:
+
+- Coordinators:
+  - Sudden spikes in failures or timeouts.
+  - Repeated invalid signatures.
+  - Large unexpected ledger movements.
+- Agents:
+  - Missing heartbeats.
+  - Error spikes.
+
+---
+
+## Multi‑tenant considerations
+
+If you host agents for multiple tenants:
+
+- Isolate:
+  - Secrets and keys per tenant.
+  - Data storage per tenant (or at least per tenant partition).
+- Use:
+  - Strict auth on any tenant‑facing APIs.
+  - Separate DIDs per tenant or per capability suite.
+
+Coordinate with Nooterra Labs or other network operators before onboarding
+highly sensitive or regulated workloads.
+
+---
+
+## Reporting issues
+
+If you find a security issue in the Labs Testnet:
+
+- Please reach out via:
+  - GitHub issues on `nooterra-protocol` (for non‑sensitive reports), or
+  - Direct email / contact channel provided by Nooterra Labs for sensitive issues.
+
+Include:
+
+- A clear description of the issue.
+- Steps to reproduce.
+- Impact assessment if possible.
+
