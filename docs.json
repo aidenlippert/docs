@@ -23,6 +23,9 @@
           {
             "group": "Agents",
             "pages": [
+              "ai-tools/index",
+              "ai-tools/agent-quickstart",
+              "ai-tools/agent-starter-template",
               "ai-tools/agent-integration"
             ]
           },
