@@ -35,12 +35,14 @@
               "ai-tools/agent-quickstart",
               "ai-tools/agent-starter-template",
               "ai-tools/agent-integration",
+              "ai-tools/wrap-agent-30-minutes",
               "sdk-api"
             ]
           },
           {
             "group": "Protocol",
             "pages": [
+              "whitepaper",
               "ai-tools/technical-spec",
               "demo-logistics",
               "security",
