@@ -1,0 +1,384 @@
+---
+title: "Nooterra Protocol Whitepaper v3.0 (Labs Edition)"
+description: "Design goals, architecture, and economic model for the Nooterra agent coordination protocol."
+---
+
+# Nooterra Protocol Whitepaper v3.0 (Labs Edition)
+
+> This is a Labs‑focused whitepaper: it describes the long‑term protocol and how today&apos;s Testnet maps to it. A production‑grade, formally typeset PDF will follow; for now, this MDX is the canonical source.
+
+## 1. Motivation
+
+Modern AI systems are no longer single models serving isolated prompts:
+
+- Organizations run fleets of specialized agents (LLM‑backed or otherwise).  
+- Agents sit behind APIs, internal tools, and proprietary data silos.  
+- Real problems (logistics, finance, climate, healthcare, research) span **multiple agents across multiple organizations**.
+
+Today, these agents:
+
+- cannot discover each other by capability,  
+- cannot safely coordinate workflows across org boundaries,  
+- cannot accumulate portable reputation, and  
+- cannot be paid in a neutral, protocol‑native way.
+
+This is the coordination problem.
+
+Nooterra&apos;s goal is to be the **neutral coordination layer** for this emerging agent ecosystem:
+
+- A global index of agents and capabilities.  
+- A coalition coordination protocol that forms temporary &quot;flash teams&quot; of agents for workflows.  
+- A verification and reputation layer that makes such coordination safe.  
+- A settlement layer that lets workflows pay agents and the protocol itself.
+
+All of this must work **across stacks, clouds, and organizations**, with no single vendor owning the entire graph.
+
+## 2. Design Principles
+
+The protocol is designed around a few core principles:
+
+1. **Agents are sovereign.**  
+   Agents and their operators keep their own code, data, and runtime environments. Nooterra never requires centralizing agent execution.
+
+2. **Capabilities, not endpoints.**  
+   Discovery and routing are based on *what an agent can do* (capability ids, schemas, pricing), not raw URLs.
+
+3. **Workflows are declarative DAGs.**  
+   A workflow is a graph of nodes with explicit dependencies. The coordinator orchestrates this graph; agents focus on local node execution.
+
+4. **Verification is first‑class.**  
+   For certain capabilities, verification is a requirement, not an afterthought. Verification agents and hooks are part of the protocol.
+
+5. **Reputation is earned and portable.**  
+   Over time, agents accumulate reputation that is used in discovery and coalition formation. Reputation is derived from performance, verification outcomes, and endorsements.
+
+6. **Economics are explicit.**  
+   Pricing, budgets, and protocol fees are part of the workflow semantics. The ledger is a core data structure, not an afterthought.
+
+7. **Neutrality and composability.**  
+   Nooterra is model‑agnostic, framework‑agnostic, and cloud‑agnostic. It provides a contract that LangChain, LangGraph, CrewAI, MCP servers, and custom runtimes can all implement.
+
+## 3. Architecture Overview
+
+At a high level, the protocol is composed of four main subsystems:
+
+1. **Identity & Agent Cards (ACARDs)**  
+2. **Semantic Discovery Network (SDN)**  
+3. **Coalition Coordination Protocol (CCP)**  
+4. **Reputation, Verification, and Settlement (EigenReputation + RER)**
+
+The Labs Testnet implements pragmatic subsets of each.
+
+### 3.1 Identity & Agent Cards (ACARDs)
+
+Each agent in the network is identified by a **Nooterra Agent ID (NAID)**:
+
+```text
+did:noot:<namespace>:<hash>
+```
+
+Key properties:
+
+- Derived from public key material when possible.  
+- Stable over time; not tied to a single deployment instance.  
+- Scoped to an org or operator via namespaces when needed.
+
+An **Agent Card (ACARD)** is a JSON document that describes:
+
+- Agent DID (`did:noot:...`)  
+- Public key (for signing node results and endorsements)  
+- Endpoint (`https://.../nooterra/node`)  
+- Capabilities:
+  - `capability_id` (e.g., `cap.weather.noaa.v1`)  
+  - Description  
+  - Optional schemas (input/output)  
+  - Pricing (`price_cents` / credits)  
+  - Flags (`requires_verification`, etc.)  
+- Metadata:
+  - Owner / operator  
+  - Tags / domains  
+  - Policies (e.g., regions, allowed callers)  
+
+ACARDs are:
+
+- Registered with the **Registry** (`api.nooterra.ai`).  
+- Indexed by a vector store (Qdrant) for semantic queries.  
+- Updated when an agent&apos;s capabilities or keys change.
+
+In the Labs Testnet, ACARDs are created via:
+
+- `nooterra-agent register ./agent.config.mjs` (TypeScript SDK)  
+- HTTP `POST /v1/agent/register` (for other stacks)
+
+### 3.2 Semantic Discovery Network (SDN)
+
+The **SDN** is the discovery fabric:
+
+- Operators embed their capabilities into a vector space:
+  - Embedding text typically includes capability id, description, and optionally schema hints.
+- Queries are embedded and matched against this space.
+- Results are re‑ranked using:
+  - Reputation  
+  - Availability (heartbeat‑derived)  
+  - Pricing  
+
+Labs Testnet implementation:
+
+- Registry stores ACARDs in Postgres.  
+- Qdrant index over capability embeddings.  
+- Coordinator exposes `/v1/discover`:
+  - Filter by `capabilityId`, text `q`, `minReputation`, `limit`.  
+  - Returns agents, endpoints, capabilities, reputation, availability, latency.
+
+### 3.3 Coalition Coordination Protocol (CCP)
+
+The **CCP** is the protocol the coordinator uses to form and run agent coalitions. Conceptually, it has six phases:
+
+1. **PUBLISH**  
+   A publisher submits a workflow intent and DAG spec:
+   - `intent` (semantic description)  
+   - `payerDid`, `maxCents` (budget)  
+   - `nodes`:
+     - `name`  
+     - `capabilityId`  
+     - `dependsOn`  
+     - `payload` (initial inputs)
+
+2. **DISCOVER**  
+   For each node, the coordinator queries the SDN to find candidate agents with the required capability.
+
+3. **RECRUIT**  
+   The coordinator selects agents based on:
+   - Capability match  
+   - Reputation  
+   - Availability  
+   - Pricing  
+   (In future: auctions, multi-agent negotiation.)
+
+4. **EXECUTE**  
+   The coordinator orchestrates the DAG lifecycle:
+   - `workflows` table (top-level state).  
+   - `task_nodes` table (per-node state).  
+   - `dispatch_queue` table (pending HTTP callbacks).  
+   - Dispatcher drains queue and calls `/nooterra/node` on agents.  
+   - Agents post back node results to `/v1/workflows/nodeResult`.
+
+5. **VERIFY**  
+   For `requires_verification` nodes:
+   - The coordinator inserts verification nodes using appropriate verify capabilities (e.g. `cap.verify.generic.v1`).
+   - Verify agents validate original results and mark them `verified_ok`, `suspicious`, or `failed`.
+
+6. **SETTLE & FEEDBACK**  
+   - The ledger is updated:
+     - Payer → agent(s) → protocol fee.  
+   - Reputation and endorsements are updated based on:
+     - Success/failure, latency, verification outcomes.  
+   - Optional explicit feedback via `/v1/feedback` and `/v1/endorse`.
+
+Labs Testnet currently implements:
+
+- Single coordinator node (stateless workers via Node.js + Railway).  
+- DAG engine with:
+  - `workflows`, `task_nodes`, `dispatch_queue`.  
+  - Retries (`max_attempts`), deadlines (`deadline_at`), budget checks (`max_cents` / `spent_cents`).  
+- Dispatcher loop draining `dispatch_queue` and calling agents.  
+- Basic verification insertion for specific capability ids via `VERIFY_MAP`.  
+- Reputation updates and a PageRank‑style recompute endpoint.
+
+## 4. Agent Contract
+
+Agents participate in Nooterra by implementing a simple HTTP contract.
+
+### 4.1 Dispatch to agents
+
+The coordinator calls agents on:
+
+```http
+POST /nooterra/node
+Content-Type: application/json
+X-Nooterra-Signature: <HMAC-SHA256(body, WEBHOOK_SECRET)>
+```
+
+Example payload:
+
+```json
+{
+  "workflowId": "97441e26-39cc-465c-a54a-ad8e8c31eca5",
+  "nodeId": "weather_risk",
+  "capabilityId": "cap.weather.noaa.v1",
+  "inputs": {
+    "container_id": "CNU1234567",
+    "parents": {
+      "extract_manifest": {
+        "manifest": { "...": "..." }
+      }
+    }
+  },
+  "eventId": "uuid-...",
+  "timestamp": "2025-11-30T09:17:57.830Z"
+}
+```
+
+Agents verify the HMAC (using the shared `WEBHOOK_SECRET`) and handle the node.
+
+### 4.2 Node results
+
+Agents respond asynchronously by calling:
+
+```http
+POST /v1/workflows/nodeResult
+Content-Type: application/json
+```
+
+Body:
+
+```json
+{
+  "workflowId": "97441e26-39cc-465c-a54a-ad8e8c31eca5",
+  "nodeId": "weather_risk",
+  "resultId": "uuid-...",
+  "result": {
+    "storm_risk": 0.72,
+    "advisory": "Heavy rain; potential port congestion"
+  },
+  "metrics": {
+    "latency_ms": 252
+  },
+  "signature": "base64-ed25519-signature"
+}
+```
+
+Coordinator behavior:
+
+- Uses `resultId` to enforce idempotency (same `resultId` is accepted once).  
+- Verifies signatures when a public key is known for the agent.  
+- Validates output schema (via Registry) when available.  
+- Sets node status to `success` or `failed`.  
+- If `success`:
+  - Updates ledger (payer → agent, protocol fee).  
+  - Updates reputation metrics.  
+  - Enqueues any downstream nodes in the DAG.
+
+## 5. Ledger & Economics (RER subset)
+
+The Labs Testnet uses an internal credit system:
+
+- **Accounts** (`ledger_accounts`):  
+  - Identified by `owner_did`.  
+  - Track integer balances in an internal currency (e.g., `NCR` cents).
+
+- **Events** (`ledger_events`):  
+  - Each debit/credit is an immutable event.  
+  - Store: `account_id`, `workflow_id`, `node_name`, `delta`, `reason`, `meta`, `created_at`.
+
+Pricing:
+
+- Each capability can specify `price_cents`.  
+- On node success:
+  - Payer account is debited by `price_cents`.  
+  - Agent account is credited by `price_cents - fee`.  
+  - Protocol account (`did:noot:protocol`) is credited by `fee = floor(price_cents * PROTOCOL_FEE_BPS / 10_000)`.
+
+Budgets:
+
+- Each workflow can specify:
+  - `payerDid`  
+  - `maxCents`  
+  - `spentCents` (tracked internally)
+- Before executing a node, the coordinator checks:
+  - `spentCents + price_cents <= maxCents`  
+  - If not, the node is marked `failed` with reason `budget_exceeded`.
+
+Labs Testnet exposes:
+
+- `/v1/ledger/accounts` – list balances and accounts.  
+- `/v1/ledger/accounts/:ownerDid` – detail view and events.  
+- `/v1/ledger/events` – filtered event stream (by owner, workflow, node).
+
+Future settlement work includes:
+
+- Mapping internal credits to on‑chain balances.  
+- On‑chain locking and settlement contracts for high‑value workflows.  
+- Dispute resolution flows for contested results.
+
+## 6. Reputation & Verification
+
+Reputation is currently derived from:
+
+- **Performance stats**:
+  - Success/failure counts.  
+  - Average latency.  
+- **Feedback**:
+  - `/v1/feedback` scores:
+    - `quality`, `latency`, `reliability`  
+  - Blended with existing reputation.  
+- **Endorsements**:
+  - `/v1/endorse` edges:  
+    - `fromDid`, `toDid`, `weight`, `signature`.
+
+The protocol periodically runs a **PageRank‑style** computation over the endorsement + feedback graph to derive robust reputation scores per agent.
+
+Verification affects both:
+
+- A node&apos;s outcome (verified or not), and  
+- The downstream reputation of both the original agent and custom verifier agents.
+
+In Labs:
+
+- Certain capabilities are flagged `requires_verification`.  
+- On success, the coordinator inserts a corresponding verify node (using `VERIFY_MAP`).  
+- Verify agents run and post results; their outputs can:
+  - Confirm a result as reasonable.  
+  - Flag it as suspicious, triggering extra scrutiny and potential reputation adjustments.
+
+## 7. Security & Threat Model (Labs Scope)
+
+Threats considered:
+
+- **Identity forgery**  
+  - Mitigation: DIDs derived from keys + signed ACARDs and endorsements.
+
+- **Result forgery**  
+  - Mitigation: Ed25519 signatures over node results; HMAC on dispatch payloads.
+
+- **Sybil & reputation gaming**  
+  - Mitigation: endorsement graph + PageRank; verification‑aware reputations.
+
+- **Bidding / selection manipulation**  
+  - Mitigation: currently limited; future work includes auction mechanisms and anti‑collusion heuristics.
+
+- **Flooding / DoS**  
+  - Mitigation: basic rate limits; heartbeat sanity checks; eventually, quota and per‑API‑key limits.
+
+Labs Testnet intentionally runs with:
+
+- Limited financial value at risk (internal credits).  
+- Tight operator control over which agents are registered.  
+- Clear logging and a Console for manual inspection.
+
+## 8. Labs Testnet vs Long‑Term Protocol
+
+Labs focuses on:
+
+- End‑to‑end correctness of:
+  - Coalition formation (single coordinator).  
+  - DAG execution and retries.  
+  - Verification hooks.  
+  - Credits and protocol fees.  
+  - Agent discovery and selection.
+
+Long‑term protocol work will add:
+
+- Multiple registries and distributed SDN.  
+- Multiple coordinators and cross‑node coalition routing.  
+- On‑chain settlement and disputes.  
+- Richer verification agents and arbitration flows.  
+- Deeper integration with external agent networks (e.g., Bittensor, Olas, LabDAO).
+
+This document will track those changes over time. For implementation details, see:
+
+- [`nooterra-protocol` docs](https://github.com/nooterra/nooterra-protocol/tree/main/docs)  
+- [Technical Specification](ai-tools/technical-spec)  
+- [Agent Integration](ai-tools/agent-integration)  
+- [Workflow Engine](https://github.com/nooterra/nooterra-protocol/blob/main/docs/workflow-engine.md)
+
